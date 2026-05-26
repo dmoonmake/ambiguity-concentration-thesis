@@ -274,8 +274,10 @@ print(multiple_composition.to_string(index=False))
 #     Saved as 4_4_3_cooccurrence_ranked_pairs.csv.
 #
 # (d) Normalised co-occurrence rates — cell [A, B] = P(B present | A
-#     present) = count(A AND B) / count(A). Answers "given that type A
-#     is present, how likely is type B to also appear?"
+#     present) = count(A AND B) / count(A). The diagonal is 1.0 because
+#     P(A present | A present) = 1, and rows with no occurrences stay 0.
+#     Answers "given that type A is present, how likely is type B to also
+#     appear?"
 #     Saved as 4_4_3_cooccurrence_rate.csv.
 # -----------------------------------------------------------------------
 
@@ -327,6 +329,9 @@ cooccurrence_rate = pd.DataFrame(0.0, index=short_labels, columns=short_labels)
 
 for col_a, label_a in zip(ambiguity_columns, short_labels):
     total_a = df[col_a].sum()  # total stories where Type A is present
+    if total_a == 0:
+        continue
+    cooccurrence_rate.loc[label_a, label_a] = 1.0
     for col_b, label_b in zip(ambiguity_columns, short_labels):
         if col_a != col_b:
             both = ((df[col_a]) & (df[col_b])).sum()
@@ -699,9 +704,18 @@ print(f"Of which high-context      : {n_hc_total} ({round(n_hc_total / n_amb * 1
 
 # -----------------------------------------------------------------------
 # B.2 80/20 Held-Out Split
-# SEED is fixed so the split is identical on every run (reproducibility).
-# The index is saved once and reused for both halves to guarantee they
-# are complementary and non-overlapping.
+#
+# IMPORTANT — this split uses random sampling (pandas DataFrame.sample),
+# NOT a sequential slice of the first 80% of rows. The random shuffle
+# means the group composition will differ from any split that takes rows
+# in dataset order (e.g. head/tail or positional slicing).
+#
+# To reproduce this exact split, random_state=42 must be used with the
+# same version of pandas and the same input DataFrame row order.
+# Any change to filtering, sorting, or pandas version will alter the split.
+#
+# The index is saved once from the first sample() call and reused for
+# both halves to guarantee they are complementary and non-overlapping.
 # -----------------------------------------------------------------------
 
 SEED             = 42
@@ -709,10 +723,14 @@ _def_idx         = amb.sample(frac=0.80, random_state=SEED).index
 definition_group = amb.loc[_def_idx].reset_index(drop=True)
 test_group       = amb.drop(_def_idx).reset_index(drop=True)
 
+# Row counts are derived directly from the split — NOT from marker results.
+# TP + FN for each group will always equal these high-context counts,
+# which confirms the marker evaluation is internally consistent.
 print(f"\nDefinition group (80%) : n={len(definition_group)}")
 print(f"Test group       (20%) : n={len(test_group)}")
-print(f"  High-context in definition group : {definition_group['actual_high'].sum()}")
-print(f"  High-context in test group       : {test_group['actual_high'].sum()}")
+print(f"  High-context stories in definition group (row count) : {definition_group['actual_high'].sum()}")
+print(f"  High-context stories in test group       (row count) : {test_group['actual_high'].sum()}")
+print(f"  Note: differs from a sequential 80/20 slice because sample() shuffles randomly (seed={SEED}).")
 
 # -----------------------------------------------------------------------
 # B.3 Definition Group — Per-Marker Coverage
@@ -787,38 +805,44 @@ def precision_recall(subset):
     return int(tp), int(fp), int(fn), round(p, 4), round(r, 4), round(f1, 4)
 
 
-full_tp, full_fp, full_fn, full_p, full_r, full_f1 = precision_recall(amb)
+# Definition group (80%) is the baseline — markers were characterised here.
+# Test group (20%) was never seen during marker design — gives unbiased result.
+# Comparing the two tells us whether precision holds on truly unseen stories.
+def_tp,  def_fp,  def_fn,  def_p,  def_r,  def_f1  = precision_recall(definition_group)
 test_tp, test_fp, test_fn, test_p, test_r, test_f1 = precision_recall(test_group)
 
 comparison_df = pd.DataFrame([
-    {"Metric": "True Positives",  "Full dataset": full_tp, "Test group (20%)": test_tp},
-    {"Metric": "False Positives", "Full dataset": full_fp, "Test group (20%)": test_fp},
-    {"Metric": "False Negatives", "Full dataset": full_fn, "Test group (20%)": test_fn},
-    {"Metric": "Precision",       "Full dataset": full_p,  "Test group (20%)": test_p},
-    {"Metric": "Recall",          "Full dataset": full_r,  "Test group (20%)": test_r},
-    {"Metric": "F1 Score",        "Full dataset": full_f1, "Test group (20%)": test_f1},
+    {"Metric": "True Positives",  "Definition group (80%)": def_tp,  "Test group (20%)": test_tp},
+    {"Metric": "False Positives", "Definition group (80%)": def_fp,  "Test group (20%)": test_fp},
+    {"Metric": "False Negatives", "Definition group (80%)": def_fn,  "Test group (20%)": test_fn},
+    {"Metric": "Precision",       "Definition group (80%)": def_p,   "Test group (20%)": test_p},
+    {"Metric": "Recall",          "Definition group (80%)": def_r,   "Test group (20%)": test_r},
+    {"Metric": "F1 Score",        "Definition group (80%)": def_f1,  "Test group (20%)": test_f1},
 ])
 
 comparison_df.to_csv("results/surface_marker_precision_recall.csv", index=False)
 
-print("\n=== B.4 Precision / Recall — Full Dataset vs Independent Test Group ===")
+print("\n=== B.4 Precision / Recall — Definition Group (80%) vs Independent Test Group (20%) ===")
 print(comparison_df.to_string(index=False))
 
 # -----------------------------------------------------------------------
 # B.5 Generalisation Verdict
-# Compare precision on the full dataset against the held-out test group.
-# A drop of more than 5 percentage points suggests the markers may have
-# been inadvertently tuned to the full dataset and do not generalise.
+# Compare precision on the definition group against the held-out test group.
+# The definition group is the correct baseline because the markers were
+# designed by inspecting only those stories. The test group was completely
+# isolated, so any drop in precision there reflects true generalisation loss
+# rather than overfitting to the marker-design population.
+# A drop of more than 5 percentage points warrants marker refinement.
 # -----------------------------------------------------------------------
 
-precision_diff = abs(full_p - test_p)
+precision_diff = abs(def_p - test_p)
 print(f"\n--- Generalisation Check ---")
-print(f"Full dataset precision : {full_p:.2%}")
-print(f"Test group precision   : {test_p:.2%}")
-print(f"Difference             : {precision_diff:.2%}")
+print(f"Definition group precision : {def_p:.2%}")
+print(f"Test group precision       : {test_p:.2%}")
+print(f"Difference                 : {precision_diff:.2%}")
 
 if precision_diff <= 0.05:
-    print("=> PASS: precision difference <=5pp — markers generalise well to unseen data.")
+    print("=> PASS: precision difference <=5pp — markers generalise well to unseen stories.")
 else:
     print("=> REVIEW: precision dropped >5pp on test group — markers may need refinement.")
 
