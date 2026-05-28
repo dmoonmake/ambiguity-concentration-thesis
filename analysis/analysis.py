@@ -491,6 +491,7 @@ print(concentration_df.to_string(index=False))
 
 def gini(array):
     """Compute the Gini coefficient using the standard rank-weighted formula."""
+    # Keep the thesis calculation reproducible by using the same standard form.
     array = np.array(array, dtype=float)
     if np.amin(array) < 0:
         array -= np.amin(array)
