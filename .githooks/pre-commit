@@ -1,0 +1,14 @@
+#!/bin/sh
+
+expected_author='dmoonmake <nook.moonmake@gmail.com>'
+author_ident=$(git var GIT_AUTHOR_IDENT 2>/dev/null)
+
+case "$author_ident" in
+  "$expected_author"*)
+    exit 0
+    ;;
+esac
+
+echo "Blocked commit: author must be $expected_author." >&2
+echo "Current author: ${author_ident:-unknown}" >&2
+exit 1
